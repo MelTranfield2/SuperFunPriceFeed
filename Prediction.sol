@@ -5,9 +5,9 @@ import "@openzeppelin/contracts@4.9.3/access/Ownable.sol";
 
 interface IERC20 {
     function approve(address spender, uint256 amount) external;
-    function transfer(address recipient, uint256 amount) external returns (bool);  // Added return type
-    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);  // Added return type
-    function balanceOf(address holder) external view returns (uint256);  // Changed to view function
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    function balanceOf(address holder) external view returns (uint256);
 }
 
 contract Prediction is Ownable {
@@ -18,44 +18,51 @@ contract Prediction is Ownable {
         bool claimed;
     }
 
+    enum BetState { OPEN, ACTIVE, CLOSED }
+
     // Constants
-    uint256 public constant PREDICTION_LENGTH = 7 days;
-    uint256 public constant PRICE_PREDICTION = 35000;   // 35,000 USD per BTC
-    uint256 public constant MIN_USDC = 2 ether;        // Minimum bet amount
-    uint256 public constant MAX_PARTICIPANTS = 10;      // Maximum participants
+    uint256 public constant PREDICTION_LENGTH = 5 minutes;  // Shortened for testing
+    uint256 public constant PRICE_PREDICTION = 35000;      // 35,000 USD per BTC
+    uint256 public constant MIN_USDC = 2 ether;           
+    uint256 public constant MAX_PARTICIPANTS = 10;
+    uint256 public constant MIN_PARTICIPANTS = 2;          // Added minimum participants
 
     // State variables
     uint256 public startBetTimestamp;
     uint256 public participantCount;
     uint256 public totalHigherAmount;
     uint256 public totalLowerAmount;
-    bool public betInitiated;                          // Fixed capitalization
+    BetState public betState;
 
-    address public immutable proxyAddress;             // Made immutable
-    IERC20 public immutable USDC;                     // Made immutable
+    address public immutable proxyAddress;
+    IERC20 public immutable USDC;
 
-    // Mappings and arrays
     mapping(address => Participant) public participants;
     address[] public participantAddresses;
 
     // Events
     event ParticipantJoined(address indexed participant, uint256 amount, bool predictedHigher);
-    event BetInitiated(uint256 timestamp);
+    event BetStarted(uint256 timestamp, uint256 requiredParticipants);
+    event BetActivated(uint256 timestamp, uint256 participants);
     event BetClosed(uint256 finalPrice, bool higherWon);
     event RewardClaimed(address indexed participant, uint256 amount);
+    event DebugLog(string message, uint256 value);  // Debug event
+    event DebugClosePrediction(string message, uint256 value);
 
     constructor(address _proxyAddress, address _USDC) {
         require(_proxyAddress != address(0), "Invalid proxy address");
         require(_USDC != address(0), "Invalid USDC address");
         proxyAddress = _proxyAddress;
         USDC = IERC20(_USDC);
+        betState = BetState.OPEN;
     }
 
-    /// @notice Place a bet on the price movement
     function placeBet(bool predictHigher) external {
-        require(!betInitiated || block.timestamp < startBetTimestamp + 1 days, "Betting period closed");
+        require(betState == BetState.OPEN, "Bet not open for new participants");
         require(participantCount < MAX_PARTICIPANTS, "Maximum participants reached");
         require(!participants[msg.sender].hasDeposited, "Already participated");
+
+        emit DebugLog("Starting placeBet", participantCount);
 
         require(USDC.transferFrom(msg.sender, address(this), MIN_USDC), "Transfer failed");
 
@@ -75,32 +82,34 @@ contract Prediction is Ownable {
         participantAddresses.push(msg.sender);
         participantCount++;
 
-        if (!betInitiated) {
-            betInitiated = true;
+        emit ParticipantJoined(msg.sender, MIN_USDC, predictHigher);
+
+        // Check if we have enough participants to start
+        if (participantCount >= MIN_PARTICIPANTS) {
+            betState = BetState.ACTIVE;
             startBetTimestamp = block.timestamp;
-            emit BetInitiated(startBetTimestamp);
+            emit BetActivated(startBetTimestamp, participantCount);
         }
 
-        emit ParticipantJoined(msg.sender, MIN_USDC, predictHigher);
+        emit DebugLog("Completed placeBet", participantCount);
     }
 
-    /// @notice Close the prediction bet
     function closePrediction() external {
-        require(betInitiated, "Bet not initiated");
+        require(betState == BetState.ACTIVE, "Bet not active");
         require(block.timestamp >= startBetTimestamp + PREDICTION_LENGTH, "Bet not finished");
         
         (uint256 price, uint256 priceTimestamp) = readDataFeed();
         require(priceTimestamp >= (block.timestamp - 3 minutes), "Price Stale");
         
         bool higherWon = price >= PRICE_PREDICTION;
+        betState = BetState.CLOSED;
+        
         emit BetClosed(price, higherWon);
-
-        betInitiated = false;
+        emit DebugClosePrediction("Prediction closed succesfully", price);
     }
 
-    /// @notice Claim rewards for winners
     function claimReward() external {
-        require(!betInitiated, "Bet still active");
+        require(betState == BetState.CLOSED, "Bet not closed");
         require(participants[msg.sender].hasDeposited, "Not a participant");
         require(!participants[msg.sender].claimed, "Already claimed!");
 
@@ -119,7 +128,6 @@ contract Prediction is Ownable {
         emit RewardClaimed(msg.sender, reward);
     }
 
-    /// @notice Read price feed data
     function readDataFeed() public view returns (uint256, uint256) {
         (int224 value, uint256 timestamp) = IProxy(proxyAddress).read();
         uint256 price = uint224(value);
@@ -127,22 +135,61 @@ contract Prediction is Ownable {
     }
 
     // Added helper functions
-    function getParticipantCount() external view returns (uint256) {
-        return participantCount;
-    }
-
-    function getBetStatus() external view returns (
-        bool isActive,
+    function getBetState() external view returns (
+        BetState state,
+        uint256 currentParticipants,
         uint256 timeRemaining,
-        uint256 currentPrice
+        uint256 currentPrice,
+        uint256 targetPrice
     ) {
         (uint256 price, ) = readDataFeed();
         
         uint256 remaining = 0;
-        if (betInitiated && block.timestamp < startBetTimestamp + PREDICTION_LENGTH) {
-            remaining = startBetTimestamp + PREDICTION_LENGTH - block.timestamp;
+        if (betState == BetState.ACTIVE) {
+            if (block.timestamp < startBetTimestamp + PREDICTION_LENGTH) {
+                remaining = startBetTimestamp + PREDICTION_LENGTH - block.timestamp;
+            }
         }
         
-        return (betInitiated, remaining, price);
+        return (
+            betState,
+            participantCount,
+            remaining,
+            price,
+            PRICE_PREDICTION
+        );
+    }
+
+    function getParticipantInfo(address participant) external view returns (
+        bool hasParticipated,
+        bool predictedHigher,
+        bool hasClaimed,
+        uint256 amount
+    ) {
+        Participant memory p = participants[participant];
+        return (
+            p.hasDeposited,
+            p.predictedHigher,
+            p.claimed,
+            p.amount
+        );
+    }
+
+    // Emergency function to return funds if bet gets stuck
+    function emergencyReturn() external onlyOwner {
+        require(betState == BetState.OPEN || 
+                (betState == BetState.ACTIVE && participantCount < MIN_PARTICIPANTS), 
+                "Cannot emergency return in current state");
+        
+        for (uint i = 0; i < participantAddresses.length; i++) {
+            address participant = participantAddresses[i];
+            if (participants[participant].hasDeposited && !participants[participant].claimed) {
+                uint256 amount = participants[participant].amount;
+                participants[participant].claimed = true;
+                require(USDC.transfer(participant, amount), "Transfer failed");
+            }
+        }
+        
+        betState = BetState.CLOSED;
     }
 }
