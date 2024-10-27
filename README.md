@@ -1,0 +1,1 @@
+This project alllows for multiple participants to come together and create a bet.
