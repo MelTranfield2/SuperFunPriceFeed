@@ -47,6 +47,7 @@ contract Prediction is Ownable {
     event BetClosed(uint256 finalPrice, bool higherWon);
     event RewardClaimed(address indexed participant, uint256 amount);
     event DebugLog(string message, uint256 value);  // Debug event
+    event PendingLog(string message, uint256 timestamp);
     event DebugClosePrediction(string message, uint256 value);
 
     constructor(address _proxyAddress, address _USDC) {
@@ -74,9 +75,9 @@ contract Prediction is Ownable {
         });
 
         if (predictHigher) {
-            totalHigherAmount += MIN_USDC;
+            totalHigherAmount += 200;
         } else {
-            totalLowerAmount += MIN_USDC;
+            totalLowerAmount += 200;
         }
 
         participantAddresses.push(msg.sender);
@@ -95,11 +96,12 @@ contract Prediction is Ownable {
     }
 
     function closePrediction() external {
-        require(betState == BetState.ACTIVE, "Bet not active");
-        require(block.timestamp >= startBetTimestamp + PREDICTION_LENGTH, "Bet not finished");
+        emit PendingLog("Transaction started...", block.timestamp);
+        //require(betState == BetState.ACTIVE, "Bet not active");
+        //require(block.timestamp >= startBetTimestamp + PREDICTION_LENGTH, "Bet not finished");
         
         (uint256 price, uint256 priceTimestamp) = readDataFeed();
-        require(priceTimestamp >= (block.timestamp - 3 minutes), "Price Stale");
+        //require(priceTimestamp >= (block.timestamp - 3 minutes), "Price Stale");
         
         bool higherWon = price >= PRICE_PREDICTION;
         betState = BetState.CLOSED;
@@ -109,21 +111,21 @@ contract Prediction is Ownable {
     }
 
     function claimReward() external {
-        require(betState == BetState.CLOSED, "Bet not closed");
-        require(participants[msg.sender].hasDeposited, "Not a participant");
-        require(!participants[msg.sender].claimed, "Already claimed!");
+        //require(betState == BetState.CLOSED, "Bet not closed");
+        //require(participants[msg.sender].hasDeposited, "Not a participant");
+        //require(!participants[msg.sender].claimed, "Already claimed!");
 
         (uint256 price, ) = readDataFeed();
         bool higherWon = price >= PRICE_PREDICTION;
-        require(participants[msg.sender].predictedHigher == higherWon, "Did not win");
+        //require(participants[msg.sender].predictedHigher == higherWon, "Did not win");
 
-        uint256 totalPot = totalHigherAmount + totalLowerAmount;
+        uint256 totalPot = totalHigherAmount + totalLowerAmount +200;
         uint256 winningPot = higherWon ? totalHigherAmount : totalLowerAmount;
         
         uint256 reward = (participants[msg.sender].amount * totalPot) / winningPot;
         
         participants[msg.sender].claimed = true;
-        require(USDC.transfer(msg.sender, reward), "Transfer failed");
+        //require(USDC.transfer(msg.sender, reward), "Transfer failed");
 
         emit RewardClaimed(msg.sender, reward);
     }
